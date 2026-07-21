@@ -80,25 +80,6 @@ A machine-readable version of this workflow is provided in **`workflow.json`**.
 
 ---
 
-## 📁 Suggested Project Structure
-
-```
-ai-medical-agent/
-├── README.md
-├── workflow.json
-├── src/
-│   ├── call_handler/         # Handles incoming calls
-│   ├── nlu/                  # Extracts intent & appointment details
-│   ├── scheduler/             # Checks/manages doctor availability
-│   ├── booking/                # Appointment booking logic
-│   ├── email_service/         # Sends confirmation emails
-│   └── spreadsheet_logger/    # Writes appointments to Excel/Sheets
-├── config/
-│   └── settings.example.json
-└── data/
-    └── appointments.xlsx      # Appointment log (or Google Sheet link)
-```
-
 ---
 
 ## 📊 Spreadsheet Log Format
@@ -141,10 +122,3 @@ The confirmation email typically includes:
 
 ---
 
-## 🗺️ Roadmap Ideas
-
-- [ ] Multi-language support for patients
-- [ ] SMS confirmation in addition to email
-- [ ] Rescheduling/cancellation via call-back
-- [ ] Doctor-side dashboard instead of raw spreadsheet
-- [ ] Waitlist handling when no slots are available
