@@ -1,0 +1,213 @@
+{
+  "workflow_name": "AI Appointment Reminder Agent",
+  "description": "n8n-orchestrated workflow that watches Google Calendar for upcoming appointments, extracts structured data via LLM, and triggers a Retell AI voice agent ('Anne') to call the patient and confirm the appointment.",
+  "version": "1.0",
+  "platform": {
+    "orchestration": "n8n",
+    "voice_agent": "Retell AI",
+    "calendar_source": "Google Calendar"
+  },
+  "trigger": {
+    "type": "google_calendar_trigger",
+    "description": "Fires when an appointment event is starting within the configured lookahead window",
+    "lookahead_expression": "{{ $now.plus(12, 'hours') }}",
+    "lookahead_hours": 12
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "name": "Google Calendar Trigger",
+      "type": "trigger",
+      "tool": "n8n - Google Calendar Trigger Node",
+      "description": "Detects an appointment event starting within the next 12 hours",
+      "outputs": ["calendar_event"]
+    },
+    {
+      "step_id": 2,
+      "name": "Extract Structured Appointment Data",
+      "type": "llm_node",
+      "tool": "n8n - LLM/AI Node",
+      "description": "Uses an LLM to convert the raw calendar event into structured JSON fields",
+      "inputs": ["calendar_event"],
+      "outputs": ["appointment_data"],
+      "system_message": "You are an assistant. Generate structured JSON with the following fields: name (full name of the recipient), phone_number (string), reason (reason for the appointment), start_time (ISO 8601 datetime), end_time (ISO 8601 datetime), email. Output ONLY in this exact JSON format. No comments, no extra text.",
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "output": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "email": { "type": "string", "format": "email" },
+              "phone_number": { "type": "string" },
+              "reason": { "type": "string" },
+              "start_time": { "type": "string", "format": "date-time" },
+              "end_time": { "type": "string", "format": "date-time" }
+            },
+            "required": ["name", "email", "phone_number", "reason", "start_time", "end_time"]
+          }
+        },
+        "required": ["output"]
+      }
+    },
+    {
+      "step_id": 3,
+      "name": "Trigger Outbound Call via Retell AI",
+      "type": "http_request",
+      "tool": "n8n - HTTP Request Node",
+      "description": "Calls the Retell AI API to place an outbound phone call, passing appointment details as dynamic variables for the agent to use",
+      "inputs": ["appointment_data"],
+      "outputs": ["call_session_started"],
+      "api_call": {
+        "method": "POST",
+        "url": "https://api.retellai.com/v2/create-phone-call",
+        "headers": {
+          "Authorization": "Bearer <your_api_key>",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "from_number": "<your connected phone number>",
+          "to_number": "{{ $json.output.phone_number }}",
+          "retell_llm_dynamic_variables": {
+            "name": "{{ $json.output.name }}",
+            "phone_number": "{{ $json.output.phone_number }}",
+            "reason": "{{ $json.output.reason }}",
+            "start_time": "{{ $json.output.start_time }}",
+            "end_time": "{{ $json.output.end_time }}"
+          },
+          "override_agent_id": "<your agent id>"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "name": "Agent Identifies Recipient",
+      "type": "voice_agent_conversation",
+      "agent": "Anne",
+      "description": "Agent asks whether it's speaking with the intended recipient",
+      "inputs": ["call_session_started"],
+      "branches": [
+        {
+          "condition": "recipient_confirmed == true",
+          "next_step": 5
+        },
+        {
+          "condition": "recipient_confirmed == false AND message_can_be_left == true",
+          "next_step": 5,
+          "note": "Continue script, prefaced with a message-relay intro"
+        },
+        {
+          "condition": "recipient_confirmed == false AND message_can_be_left == false",
+          "next_step": "end_call_unavailable"
+        }
+      ]
+    },
+    {
+      "step_id": 5,
+      "name": "Introduction",
+      "type": "voice_agent_conversation",
+      "agent": "Anne",
+      "description": "Agent introduces herself and states the purpose of the call",
+      "script": "This is Anne calling from Smile Dental Clinic. I'm reaching out to remind you about your upcoming dental appointment.",
+      "next_step": 6
+    },
+    {
+      "step_id": 6,
+      "name": "Provide Appointment Details",
+      "type": "voice_agent_conversation",
+      "agent": "Anne",
+      "description": "Agent states the reason and time window for the appointment, converting ISO timestamps to natural spoken language",
+      "script": "Your appointment for {{reason}} is scheduled between {{start_time}} and {{end_time}}.",
+      "next_step": 7
+    },
+    {
+      "step_id": 7,
+      "name": "Confirm Availability",
+      "type": "voice_agent_conversation",
+      "agent": "Anne",
+      "description": "Agent asks if the scheduled time still works for the patient",
+      "script": "Does that time still work for you?",
+      "branches": [
+        {
+          "condition": "patient_confirms == true",
+          "next_step": "end_call_confirmed"
+        },
+        {
+          "condition": "patient_wants_reschedule_or_cancel == true",
+          "next_step": "transfer_to_staff"
+        },
+        {
+          "condition": "response_unclear == true",
+          "next_step": 8
+        }
+      ]
+    },
+    {
+      "step_id": 8,
+      "name": "Clarify Response",
+      "type": "voice_agent_conversation",
+      "agent": "Anne",
+      "description": "Agent restates appointment details to clarify an unclear response",
+      "script": "Just to confirm — your appointment is between {{start_time}} and {{end_time}} for {{reason}}. Would you like to keep that time?",
+      "branches": [
+        {
+          "condition": "patient_confirms == true",
+          "next_step": "end_call_confirmed"
+        },
+        {
+          "condition": "patient_still_unsure_or_wants_change == true",
+          "next_step": "transfer_to_staff"
+        }
+      ]
+    },
+    {
+      "step_id": "transfer_to_staff",
+      "name": "Transfer Call to Human Staff",
+      "type": "function_call",
+      "function": "transfer_call",
+      "description": "Transfers the call to a human clinic representative to handle rescheduling or cancellation",
+      "outputs": ["call_transferred"]
+    },
+    {
+      "step_id": "end_call_confirmed",
+      "name": "End Call - Appointment Confirmed",
+      "type": "function_call",
+      "function": "end_call",
+      "description": "Agent thanks the patient and politely ends the call after confirming the appointment",
+      "script": "Great! We look forward to seeing you then. Is there anything else I can help you with today?",
+      "outputs": ["call_session_ended", "appointment_status: confirmed"]
+    },
+    {
+      "step_id": "end_call_unavailable",
+      "name": "End Call - Recipient Unavailable",
+      "type": "function_call",
+      "function": "end_call",
+      "description": "Agent ends the call when the recipient is unavailable and no message could be left",
+      "script": "No problem, I'll try reaching out later. Thank you and have a great day!",
+      "outputs": ["call_session_ended", "appointment_status: no_contact"]
+    }
+  ],
+  "functions": {
+    "transfer_call": {
+      "description": "Transfers the active call to a human representative when the patient wants to reschedule or cancel"
+    },
+    "end_call": {
+      "description": "Ends the call politely, either because the conversation is complete or the recipient is unavailable"
+    }
+  },
+  "conversation_notes": [
+    "Always convert ISO 8601 timestamps into natural spoken language before speaking (e.g. '2025-04-12T15:30:00' becomes 'Three thirty PM on Saturday, April 12th').",
+    "Never read raw timestamps, seconds, or timezone codes aloud.",
+    "Keep responses concise, engaging, proactive, and non-repetitive."
+  ],
+  "error_handling": {
+    "call_not_answered": "Log appointment_status as 'no_answer' and optionally retry or fall back to SMS",
+    "retell_api_failure": "Retry the HTTP request up to 3 times, then flag for manual staff follow-up",
+    "llm_extraction_failure": "Flag the calendar event for manual review if required fields cannot be extracted"
+  },
+  "data_privacy_notes": [
+    "Patient name, phone number, email, and appointment reason are sensitive data — encrypt in transit and at rest",
+    "Store Retell AI and n8n API keys as environment variables/secrets, never hard-coded or committed to source control",
+    "Comply with applicable healthcare data privacy regulations (e.g., HIPAA, GDPR, or local equivalents)"
+  ]
+}
